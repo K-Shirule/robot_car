@@ -1,6 +1,21 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include "DHT.h"
+#define DHTPIN 4
+#define DHTTYPE DHT11
+
+DHT dht(DHTPIN, DHTTYPE);
+
+unsigned long lastSensorSend = 0;
+const unsigned long SENSOR_INTERVAL = 2000;
+
+typedef struct {
+  float temperature;
+  float humidity;
+} SensorData;
+
+uint8_t camMac[] = {0x28, 0x05, 0xA5, 0x25, 0x55, 0xB4}; //28:05:A5:25:55:B4
 
 unsigned long lastCommandTime = 0;
 const unsigned long COMMAND_TIMEOUT = 700; //delay so that it auto-stops in case the last signal is stucj on a direction - basically the robot keeps moving even though it 
@@ -261,9 +276,31 @@ void onReceive(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   }
 }
 
+void sendSensorData() {
+  float t = dht.readTemperature(true); // TRUE = Fahrenheit
+  float h = dht.readHumidity();
+
+  if (isnan(t) || isnan(h)) {
+    Serial.println("DHT failed");
+    return;
+  }
+
+  SensorData data;
+  data.temperature = t;
+  data.humidity = h;
+
+  esp_now_send(camMac, (uint8_t*)&data, sizeof(data));
+
+  Serial.print("Sent Temperature (F): ");
+  Serial.print(t);
+  Serial.print(" | Humidity: ");
+  Serial.println(h);
+}
+
 //this makes all the pins on and stuff similar to 146 labs where we enable gpios and power buses
 void setup() {
   Serial.begin(115200);
+  dht.begin();
 
   pinMode(motor1Pin1, OUTPUT); pinMode(motor1Pin2, OUTPUT);
   pinMode(motor2Pin1, OUTPUT); pinMode(motor2Pin2, OUTPUT);
@@ -300,6 +337,12 @@ void setup() {
     return;
   }
 
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, camMac, 6);
+  peer.channel = 6;
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
+
   Serial.println("ESP-NOW ready");
 }
 
@@ -307,6 +350,11 @@ void loop() {
   if (isMoving && millis() - lastCommandTime > COMMAND_TIMEOUT) {
     stopMotors();
     Serial.println("Timeout stop");
+  }
+
+  if (millis() - lastSensorSend > SENSOR_INTERVAL) {
+    lastSensorSend = millis();
+    sendSensorData();
   }
 
   delay(5);
